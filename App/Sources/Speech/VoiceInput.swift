@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import PocketdKit
 import Speech
 
 /// On-device speech-to-text for a microphone button on the Ask and Today
