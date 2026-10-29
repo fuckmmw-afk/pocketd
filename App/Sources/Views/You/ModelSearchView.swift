@@ -114,7 +114,17 @@ struct ModelSearchView: View {
                 detail: "Only phone-sized files show up here. Try the family name on its own."
             )
         case let .unavailable(id, reason):
-            EmptyCard(symbol: "exclamationmark.circle", title: "Pocketd can't run “\(id)”.", detail: reason)
+            if let speech = SpeechModels.model(forRepository: id) {
+                // Not a brain, but something Pocketd can run: a speech model.
+                YouSection(
+                    "Speech recognition",
+                    footnote: "Turns your voice into text on this iPhone, for the microphone and for other devices."
+                ) {
+                    SpeechModelRow(model: speech)
+                }
+            } else {
+                EmptyCard(symbol: "exclamationmark.circle", title: "Pocketd can't run “\(id)”.", detail: reason)
+            }
         case let .failed(message):
             EmptyCard(symbol: "wifi.exclamationmark", title: "That didn't work.", detail: message) {
                 PillButton(title: "Try again", symbol: "arrow.clockwise") { attempt += 1 }

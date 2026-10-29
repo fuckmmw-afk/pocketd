@@ -54,6 +54,7 @@ struct ServerSettingsView: View {
             network
             access
             claudeCode
+            SpeechModelsSection()
             answers
             device
             sampling

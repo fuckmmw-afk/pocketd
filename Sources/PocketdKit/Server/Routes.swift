@@ -57,6 +57,9 @@ extension InferenceServer {
         await server.appendRoute("POST /v1/completions") { [self] request in
             await handleCompletions(request)
         }
+        await server.appendRoute("POST /v1/audio/transcriptions") { [self] request in
+            await handleTranscriptions(request)
+        }
 
         // Anthropic dialect
         await server.appendRoute("POST /v1/messages") { [self] request in

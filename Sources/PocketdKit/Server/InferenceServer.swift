@@ -35,6 +35,9 @@ public actor InferenceServer {
     /// Used to tell a searcher whether a file will fit before they spend
     /// gigabytes finding out.
     let deviceBudget: DeviceBudget
+    /// Speech to text for `/v1/audio/transcriptions`. Nil in tests and in a
+    /// build without it, where the route answers 501.
+    let transcriber: (any SpeechTranscriber)?
 
     private var server: HTTPServer?
     private var runTask: Task<Void, Never>?
@@ -54,6 +57,7 @@ public actor InferenceServer {
         models: @escaping @Sendable () async -> [ModelRecord],
         puller: (@Sendable (ModelRecord) -> AsyncThrowingStream<DownloadProgress, any Error>)? = nil,
         deviceBudget: DeviceBudget = .current(hasIncreasedMemoryLimit: false),
+        transcriber: (any SpeechTranscriber)? = nil,
         log: RequestLog = RequestLog()
     ) {
         self.configuration = configuration
@@ -61,6 +65,7 @@ public actor InferenceServer {
         self.modelsProvider = models
         self.puller = puller
         self.deviceBudget = deviceBudget
+        self.transcriber = transcriber
         self.log = log
     }
 

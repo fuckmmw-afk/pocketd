@@ -223,9 +223,9 @@ struct AskComposer<Accessory: View>: View {
             // The recogniser's last callback arrives after `endAudio()`, and it
             // carries the final word. Sending before it lands is how "remind me
             // at four" becomes "remind me at".
-            try? await Task.sleep(for: .milliseconds(400))
+            let final = await voice.finalTranscript()
             levels = []
-            let said = voice.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            let said = final.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !said.isEmpty else {
                 isFocused = true
                 return

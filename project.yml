@@ -48,6 +48,12 @@ packages:
   Jinja:
     url: https://github.com/huggingface/swift-jinja
     from: 2.3.5
+  # Parakeet speech recognition on the Neural Engine: Core ML bundles from
+  # FluidInference on Hugging Face, and the decoding around them. Pinned, like
+  # LocalLLMClient, because its model layout and API move between releases.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    exactVersion: 0.18.0
 
 # Project-wide, and it has to be project-wide rather than on the app target.
 #
@@ -327,6 +333,8 @@ targets:
         product: Mixpanel
       - package: Jinja
         product: Jinja
+      - package: FluidAudio
+        product: FluidAudio
       # Embeds the widget. Without this the extension builds and is simply
       # not in the .app, which looks exactly like a widget that does not appear
       # in the gallery — a failure with no error attached to it.
