@@ -41,12 +41,33 @@ public struct ChatMessage: Sendable, Codable, Equatable {
     /// serialise their own message types.
     public var sentAt: Date?
 
-    public init(role: Role, content: String, images: [Data] = [], cards: [AnswerCard] = [], sentAt: Date? = nil) {
+    /// Calls an assistant turn made to tools the client runs (`ClientTools`).
+    ///
+    /// Empty for every turn the phone writes: its own tools run here and their
+    /// results are folded into the transcript as text. Only a client that
+    /// executes tools itself — the Anthropic route — carries calls back in, so
+    /// the chat template can render them the way the model wrote them.
+    public var toolCalls: [ToolCall]
+
+    /// On a `.tool` turn, which call this is the result of.
+    public var toolCallID: String?
+
+    public init(
+        role: Role,
+        content: String,
+        images: [Data] = [],
+        cards: [AnswerCard] = [],
+        sentAt: Date? = nil,
+        toolCalls: [ToolCall] = [],
+        toolCallID: String? = nil
+    ) {
         self.role = role
         self.content = content
         self.images = images
         self.cards = cards
         self.sentAt = sentAt
+        self.toolCalls = toolCalls
+        self.toolCallID = toolCallID
     }
 
     public static func system(_ content: String) -> ChatMessage { .init(role: .system, content: content) }
@@ -68,7 +89,7 @@ private struct LossyCard: Decodable {
 
 extension ChatMessage {
     private enum CodingKeys: String, CodingKey {
-        case role, content, images, cards, sentAt
+        case role, content, images, cards, sentAt, toolCalls, toolCallID
     }
 
     /// Written by hand only because a synthesised decoder throws on a key that
@@ -103,6 +124,9 @@ extension ChatMessage {
         // Lossy for the same reason as `cards`: a date this build cannot read
         // costs a separator, never the conversation.
         sentAt = (try? container.decodeIfPresent(Date.self, forKey: .sentAt)) ?? nil
+        // Lossy for the same reason again; no transcript on disk has either.
+        toolCalls = (try? container.decodeIfPresent([ToolCall].self, forKey: .toolCalls)) ?? []
+        toolCallID = (try? container.decodeIfPresent(String.self, forKey: .toolCallID)) ?? nil
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -114,6 +138,10 @@ extension ChatMessage {
             try container.encode(cards, forKey: .cards)
         }
         try container.encodeIfPresent(sentAt, forKey: .sentAt)
+        if !toolCalls.isEmpty {
+            try container.encode(toolCalls, forKey: .toolCalls)
+        }
+        try container.encodeIfPresent(toolCallID, forKey: .toolCallID)
     }
 }
 

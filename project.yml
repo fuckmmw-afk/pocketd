@@ -39,6 +39,15 @@ packages:
   Mixpanel:
     url: https://github.com/mixpanel/mixpanel-swift.git
     exactVersion: 4.4.0
+  # The Jinja engine LocalLLMClient renders chat templates with, named here
+  # because the app now renders one itself: the Anthropic route's prompts carry
+  # client tools and tool calls, which LocalLLMClient has no way to take. Same
+  # URL and the same lower bound as LocalLLMClient's own requirement, so the
+  # two resolve to one copy — a second URL for the same package is an identity
+  # conflict SwiftPM refuses.
+  Jinja:
+    url: https://github.com/huggingface/swift-jinja
+    from: 2.3.5
 
 # Project-wide, and it has to be project-wide rather than on the app target.
 #
@@ -316,6 +325,8 @@ targets:
         product: LocalLLMClientLlama
       - package: Mixpanel
         product: Mixpanel
+      - package: Jinja
+        product: Jinja
       # Embeds the widget. Without this the extension builds and is simply
       # not in the .app, which looks exactly like a widget that does not appear
       # in the gallery — a failure with no error attached to it.

@@ -58,6 +58,24 @@ extension InferenceServer {
             await handleCompletions(request)
         }
 
+        // Anthropic dialect
+        await server.appendRoute("POST /v1/messages") { [self] request in
+            await handleAnthropicMessages(request)
+        }
+        await server.appendRoute("POST /v1/messages/count_tokens") { [self] request in
+            await handleAnthropicCountTokens(request)
+        }
+        // Batches and the rest of the Messages API are not served. Said in
+        // Anthropic's shape, which is the only one its clients can read.
+        await server.appendRoute("POST /v1/messages/*") { [self] request in
+            anthropicError(
+                .notFound,
+                type: "not_found_error",
+                message: "No route for \(request.path).",
+                headers: await corsHeaders()
+            )
+        }
+
         // Ollama dialect
         await server.appendRoute("GET /api/tags") { [self] request in
             await handleOllamaTags(request)

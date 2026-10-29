@@ -53,6 +53,7 @@ struct ServerSettingsView: View {
         ) {
             network
             access
+            claudeCode
             answers
             device
             sampling
@@ -149,6 +150,41 @@ struct ServerSettingsView: View {
             }
             RowDivider(inset: 0)
             ToggleRow(title: "Allow browser requests (CORS)", detail: nil, isOn: $draft.allowCORS)
+        }
+    }
+
+    // MARK: - Claude Code
+
+    /// The live address, port and key — what a request would be accepted
+    /// with now, not what the draft would change them to. With the server off
+    /// the address is this phone's Wi-Fi one, which is what it will listen on.
+    private var claudeCodeCommands: String {
+        let live = model.configuration
+        let host: String
+        let port: UInt16
+        if case let .running(runningHost, runningPort) = model.serverState {
+            host = runningHost
+            port = runningPort
+        } else {
+            host = live.binding == .loopback ? "127.0.0.1" : (NetworkInterface.localIPv4Address() ?? "<iphone-ip>")
+            port = live.port
+        }
+        return ClaudeCodeSetup.exports(host: host, port: port, apiKey: live.requiresAuth ? live.apiKey : nil)
+    }
+
+    private var claudeCode: some View {
+        YouSection(
+            "Claude Code",
+            footnote: "Paste into a terminal on your computer, then run claude. These lines include the key."
+        ) {
+            MonoBlock(text: claudeCodeCommands)
+                .padding(.vertical, PDSpacing.s)
+            RowDivider(inset: 0)
+            ActionRow(symbol: "doc.on.doc", title: "Copy commands", detail: nil) {
+                UIPasteboard.general.string = claudeCodeCommands
+                Haptics.success()
+                toasts.show("Commands copied", symbol: "doc.on.doc")
+            }
         }
     }
 

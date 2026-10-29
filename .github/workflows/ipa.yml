@@ -1,0 +1,138 @@
+name: IPA
+
+# An unsigned device build, packaged as an .ipa for signing elsewhere (ESign,
+# AltStore, Sideloadly). Nothing here holds a certificate or a profile, and
+# nothing needs one: CODE_SIGNING_ALLOWED=NO builds the .app without signing
+# it, and whoever installs it signs it with their own identity.
+on:
+  push:
+    branches: [feature/anthropic-api]
+  workflow_dispatch:
+
+permissions:
+  # For the release this publishes the .ipa to.
+  contents: write
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: package tests
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: xcodebuild -version && swift --version
+
+      # The whole API surface, the Anthropic dialect included, against a real
+      # server on a loopback port.
+      - name: Test the package
+        run: swift test
+
+  ipa:
+    name: unsigned IPA
+    needs: test
+    runs-on: macos-15
+    # llama.cpp arrives as a prebuilt xcframework (a SwiftPM binary target, from
+    # llama.cpp's own releases), but LocalLLMClient's C++ around it and a
+    # Release build of everything else are still a long compile.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the project
+        run: xcodegen generate
+
+      # The checkouts and the llama.cpp xcframework download, keyed on what
+      # decides them.
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: .build/ipa/SourcePackages
+          key: ${{ runner.os }}-ipa-spm-${{ hashFiles('project.yml', 'Package.swift') }}
+          restore-keys: ${{ runner.os }}-ipa-spm-
+
+      # Release, for a device. -skipMacroValidation and
+      # -skipPackagePluginValidation because LocalLLMClient ships a macro
+      # plugin that Xcode otherwise blocks until a human clicks Trust.
+      # The entitlements files stay referenced by the project as they are;
+      # with signing off they are not applied here, and the signer applies
+      # them (or its profile's) when it signs.
+      - name: Build the app
+        run: |
+          xcodebuild \
+            -project Pocketd.xcodeproj \
+            -scheme Pocketd \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath .build/ipa \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            build > xcodebuild.log 2>&1 || {
+              grep -E "error:" xcodebuild.log | sort -u | head -80
+              tail -60 xcodebuild.log
+              exit 1
+            }
+          tail -3 xcodebuild.log
+          test -d .build/ipa/Build/Products/Release-iphoneos/Pocketd.app
+
+      - name: Package the IPA
+        run: |
+          rm -rf Payload Pocketd.ipa
+          mkdir Payload
+          cp -R .build/ipa/Build/Products/Release-iphoneos/Pocketd.app Payload/
+          # The widget extension must travel inside the app, or it is missing
+          # from the device with no error anywhere.
+          test -d Payload/Pocketd.app/PlugIns/PocketdWidgets.appex
+          zip -qry Pocketd.ipa Payload
+          ls -la Pocketd.ipa
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" Payload/Pocketd.app/Info.plist
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+          if-no-files-found: ignore
+
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pocketd-unsigned-ipa
+          path: Pocketd.ipa
+          if-no-files-found: error
+
+      - name: Publish a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="anthropic-api-${{ github.run_number }}"
+          gh release create "$tag" Pocketd.ipa \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --prerelease \
+            --title "Pocketd with the Anthropic API (build ${{ github.run_number }})" \
+            --notes "Unsigned IPA from ${{ github.sha }} on ${{ github.ref_name }}. Sign it yourself (ESign, AltStore, Sideloadly) before installing."
