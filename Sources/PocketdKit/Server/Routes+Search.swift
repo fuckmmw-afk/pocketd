@@ -12,7 +12,8 @@ extension InferenceServer {
         let cors = corsHeaders()
         if let rejection = await authorizeAndLog(request) { return rejection }
 
-        let query = request.query.first(where: { $0.name == "q" })?.value ?? ""
+        // A pasted huggingface.co link becomes the repository id it names.
+        let query = HuggingFaceSearch.normalizedQuery(request.query.first(where: { $0.name == "q" })?.value ?? "")
         guard query.count >= 2 else {
             return errorResponse(
                 status: .badRequest,
