@@ -151,6 +151,13 @@ final class ProStore {
     }
 
     private func decide() {
+        #if POCKETD_SIDELOAD
+        // A build signed by its owner (ESign, AltStore) has no App Store to
+        // buy from, so it is built with Pro on. Only the unsigned-IPA workflow
+        // sets this condition; the App Store build never does.
+        entitlement = .purchased
+        return
+        #endif
         entitlement = ProAccess.entitlement(
             purchased: ownsPurchase,
             environment: app?.environment,

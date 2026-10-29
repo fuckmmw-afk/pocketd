@@ -73,6 +73,8 @@ jobs:
       # Release, for a device. -skipMacroValidation and
       # -skipPackagePluginValidation because LocalLLMClient ships a macro
       # plugin that Xcode otherwise blocks until a human clicks Trust.
+      # POCKETD_SIDELOAD turns Pocketd Pro on (see ProStore.decide): a build
+      # its owner signs has no App Store to buy it from.
       # The entitlements files stay referenced by the project as they are;
       # with signing off they are not applied here, and the signer applies
       # them (or its profile's) when it signs.
@@ -90,6 +92,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) POCKETD_SIDELOAD' \
             build > xcodebuild.log 2>&1 || {
               grep -E "error:" xcodebuild.log | sort -u | head -80
               tail -60 xcodebuild.log
