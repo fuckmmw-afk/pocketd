@@ -20,7 +20,7 @@ concurrency:
 jobs:
   test:
     name: package tests
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
   ipa:
     name: unsigned IPA
     needs: test
-    runs-on: macos-26
+    runs-on: xcode-27
     # llama.cpp arrives as a prebuilt xcframework (a SwiftPM binary target, from
     # llama.cpp's own releases), but LocalLLMClient's C++ around it and a
     # Release build of everything else are still a long compile.
