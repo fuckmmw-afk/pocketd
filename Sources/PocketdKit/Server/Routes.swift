@@ -57,6 +57,27 @@ extension InferenceServer {
         await server.appendRoute("POST /v1/completions") { [self] request in
             await handleCompletions(request)
         }
+        await server.appendRoute("POST /v1/audio/transcriptions") { [self] request in
+            await handleTranscriptions(request)
+        }
+
+        // Anthropic dialect
+        await server.appendRoute("POST /v1/messages") { [self] request in
+            await handleAnthropicMessages(request)
+        }
+        await server.appendRoute("POST /v1/messages/count_tokens") { [self] request in
+            await handleAnthropicCountTokens(request)
+        }
+        // Batches and the rest of the Messages API are not served. Said in
+        // Anthropic's shape, which is the only one its clients can read.
+        await server.appendRoute("POST /v1/messages/*") { [self] request in
+            anthropicError(
+                .notFound,
+                type: "not_found_error",
+                message: "No route for \(request.path).",
+                headers: await corsHeaders()
+            )
+        }
 
         // Ollama dialect
         await server.appendRoute("GET /api/tags") { [self] request in
@@ -313,7 +334,7 @@ public enum PocketdKit {
     /// So the two are pinned together by `ServerVersionTests` instead, which
     /// reads project.yml. Bumping one without the other is now a test failure
     /// rather than a wrong answer on the wire.
-    public static let version = "1.1.0"
+    public static let version = "1.1.1"
 
     /// Echoed on OpenAI responses. The SDKs surface it verbatim, so it says
     /// what actually served the request rather than imitating another vendor.

@@ -20,19 +20,25 @@ public struct GenerationRequest: Sendable, Equatable {
     /// set this gets the path with no access to personal data, not the
     /// privileged one. Fail closed.
     public var origin: RequestOrigin
+    /// Non-nil when the caller runs its own tools. See `ClientTools` for what
+    /// that changes; nil — every caller but the Anthropic route — changes
+    /// nothing.
+    public var clientTools: ClientTools?
 
     public init(
         modelID: String,
         messages: [ChatMessage],
         options: GenerationOptions = .default,
         sampling: SamplingParameters? = nil,
-        origin: RequestOrigin = .network(host: "unknown", port: 0)
+        origin: RequestOrigin = .network(host: "unknown", port: 0),
+        clientTools: ClientTools? = nil
     ) {
         self.modelID = modelID
         self.messages = messages
         self.options = options
         self.sampling = sampling
         self.origin = origin
+        self.clientTools = clientTools
     }
 }
 
@@ -201,6 +207,14 @@ public protocol InferenceEngine: Sendable {
     /// an answer somebody is reading. Every cancelled stream ends the way a
     /// cancelled stream always does.
     func interrupt() async
+
+    /// How many tokens the prompt for this request comes to, as `generate`
+    /// would build it — chat template, tools and all.
+    ///
+    /// For `count_tokens`, and for refusing a prompt that cannot fit before a
+    /// stream has started rather than halfway through one. An engine with a
+    /// tokenizer should count with it; the default estimates.
+    func countPromptTokens(_ request: GenerationRequest) async throws -> Int
 }
 
 public extension InferenceEngine {
@@ -209,6 +223,18 @@ public extension InferenceEngine {
 
     /// Most engines add nothing.
     var promptOverheadTokens: Int { get async { 0 } }
+
+    /// The same estimate `ContextGuard` makes, plus the tools and calls a
+    /// client-tool request carries. An engine with no tokenizer of its own
+    /// can do no better.
+    func countPromptTokens(_ request: GenerationRequest) async throws -> Int {
+        var text = request.messages.flatMap { $0.toolCalls }.map { $0.arguments.serialized }.joined()
+        if let tools = request.clientTools?.offered {
+            text += ChatTemplateInput.nativeTools(tools).map(\.serialized).joined()
+        }
+        return ContextGuard.estimateTokens(request.messages) + ContextGuard.estimateTokens(text)
+            + (await promptOverheadTokens)
+    }
 
     /// An engine with nothing configured is an engine running llama.cpp's own
     /// defaults, which is what an unconfigured `llama-server` would do too.

@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import PocketdKit
 import Speech
 
 /// On-device speech-to-text for a microphone button on the Ask and Today
@@ -65,9 +66,20 @@ final class VoiceInput {
     /// pack finishes downloading, or Settings > General > Language changes
     /// under the app.
     var isSupported: Bool {
+        if Self.parakeet != nil { return true }
         guard let recognizer = SFSpeechRecognizer() else { return false }
         return recognizer.supportsOnDeviceRecognition
     }
+
+    /// The downloaded speech model, when there is one. With it the microphone
+    /// records and Parakeet transcribes when the button is let go, which needs
+    /// only the microphone permission; without it Apple's on-device
+    /// recogniser listens live, as it always has.
+    private static var parakeet: SpeechModel? { SpeechModelStore.shared.activeModel }
+
+    /// Audio recorded for Parakeet, and the transcription of it once let go.
+    private let recording = RecordedAudio()
+    private var transcription: Task<Void, Never>?
 
     private let audioEngine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
@@ -98,6 +110,12 @@ final class VoiceInput {
     /// once; calling this again after a decision re-reads that decision
     /// instead of asking again.
     func requestAuthorization() async -> Bool {
+        if Self.parakeet != nil {
+            _ = await AVAudioApplication.requestRecordPermission()
+            let current = Self.currentAuthorization()
+            authorization = current
+            return current == .granted
+        }
         let speechStatus = await Self.speechAuthorization()
         // Asking for the microphone after Speech Recognition was refused
         // would show a permission sheet for a capability that refusal already
@@ -118,6 +136,13 @@ final class VoiceInput {
     /// comes back should see that the next time this is checked, not only the
     /// next time this class happens to ask.
     private static func currentAuthorization() -> Authorization {
+        if parakeet != nil {
+            switch AVAudioApplication.shared.recordPermission {
+            case .granted: return .granted
+            case .denied: return .denied
+            default: return .unknown
+            }
+        }
         switch (SFSpeechRecognizer.authorizationStatus(), AVAudioApplication.shared.recordPermission) {
         case (.authorized, .granted):
             return .granted
@@ -143,6 +168,11 @@ final class VoiceInput {
         authorization = liveAuthorization
         guard liveAuthorization == .granted else {
             error = Self.refusedSentence
+            return
+        }
+
+        if let model = Self.parakeet {
+            startRecording(for: model)
             return
         }
 
@@ -218,6 +248,11 @@ final class VoiceInput {
         level = 0
         autoStopTask?.cancel()
         autoStopTask = nil
+        if let model = recording.model {
+            teardownAudioEngineAndSession()
+            finishRecording(for: model)
+            return
+        }
         // Ends the audio rather than cancelling the task, so the recognizer
         // still hands back a final result for whatever was already said —
         // cancelling is what would throw away the last word spoken before the
@@ -234,6 +269,94 @@ final class VoiceInput {
     func reset() {
         transcript = ""
         error = nil
+    }
+
+    /// The transcript once it is final. Apple's recogniser sends its last
+    /// word just after `stop()`, so that path waits a moment as the composer
+    /// always did; Parakeet's transcription is awaited.
+    func finalTranscript() async -> String {
+        if let transcription {
+            await transcription.value
+        } else {
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+        return transcript
+    }
+
+    // MARK: - Parakeet
+
+    private func startRecording(for model: SpeechModel) {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            try session.setActive(true)
+        } catch {
+            self.error = "Couldn't start the microphone. Try again."
+            return
+        }
+
+        let inputNode = audioEngine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+        inputNode.removeTap(onBus: 0)
+        let sessionToken = UUID()
+        token = sessionToken
+        recording.start(model: model, sampleRate: format.sampleRate)
+
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: format,
+            block: Self.recordingTapBlock(into: recording, token: sessionToken, owner: self)
+        )
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+            _ = recording.finish()
+            self.error = "Couldn't start the microphone. Try again."
+            return
+        }
+        transcript = ""
+        transcription = nil
+        isListening = true
+        scheduleAutoStop(for: sessionToken)
+    }
+
+    private func finishRecording(for model: SpeechModel) {
+        let (samples, sampleRate) = recording.finish()
+        let sessionToken = token
+        transcription = Task { [weak self] in
+            do {
+                let audio = try ParakeetTranscriber.resampled(samples, from: sampleRate)
+                let result = try await ParakeetTranscriber.shared.transcribe(samples: audio, model: model)
+                guard let self, self.token == sessionToken else { return }
+                self.transcript = result.text
+                if result.text.isEmpty { self.error = "Pocketd didn't hear anything. Try again." }
+            } catch {
+                guard let self, self.token == sessionToken else { return }
+                self.error = "Pocketd couldn't turn that into words. Try again."
+            }
+        }
+    }
+
+    /// Copies each buffer's first channel out on the render thread and
+    /// reports its level, like `tapBlock` does for Apple's recogniser.
+    private nonisolated static func recordingTapBlock(
+        into recording: RecordedAudio,
+        token: UUID,
+        owner: VoiceInput
+    ) -> AVAudioNodeTapBlock {
+        { [weak owner] buffer, _ in
+            if let channel = buffer.floatChannelData {
+                recording.append(UnsafeBufferPointer(start: channel[0], count: Int(buffer.frameLength)))
+            }
+            let level = rmsLevel(of: buffer)
+            Task { @MainActor [weak owner] in
+                owner?.updateLevel(level, for: token)
+            }
+        }
     }
 
     deinit {
@@ -414,7 +537,7 @@ final class VoiceInput {
     /// to find is either Microphone or Speech Recognition, and saying both
     /// sends them looking for one that is already on.
     static var refusedSentence: String {
-        if SFSpeechRecognizer.authorizationStatus() != .authorized {
+        if parakeet == nil, SFSpeechRecognizer.authorizationStatus() != .authorized {
             return "Speech Recognition is off for Pocketd in iOS Settings."
         }
         if AVAudioApplication.shared.recordPermission != .granted {
@@ -428,7 +551,39 @@ final class VoiceInput {
     /// Whether iOS has never asked for Speech Recognition — the moment a
     /// primer goes up, before the system's own prompt.
     static var hasNeverAsked: Bool {
-        SFSpeechRecognizer.authorizationStatus() == .notDetermined
+        (parakeet == nil && SFSpeechRecognizer.authorizationStatus() == .notDetermined)
             || AVAudioApplication.shared.recordPermission == .undetermined
+    }
+}
+
+/// Microphone samples collected for Parakeet, written from the audio render
+/// thread and read on the main actor once recording stops.
+private final class RecordedAudio: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [Float] = []
+    private var sampleRate: Double = 16_000
+    private var recordingFor: SpeechModel?
+
+    /// The model being recorded for, while a recording is open.
+    var model: SpeechModel? { lock.withLock { recordingFor } }
+
+    func start(model: SpeechModel, sampleRate: Double) {
+        lock.withLock {
+            recordingFor = model
+            self.sampleRate = sampleRate
+            samples = []
+            samples.reserveCapacity(Int(sampleRate) * 10)
+        }
+    }
+
+    func append(_ buffer: UnsafeBufferPointer<Float>) {
+        lock.withLock { samples.append(contentsOf: buffer) }
+    }
+
+    func finish() -> (samples: [Float], sampleRate: Double) {
+        lock.withLock {
+            defer { samples = []; recordingFor = nil }
+            return (samples, sampleRate)
+        }
     }
 }

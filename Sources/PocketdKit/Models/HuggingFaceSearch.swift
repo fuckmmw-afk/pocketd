@@ -58,8 +58,8 @@ public struct HuggingFaceSearch: Sendable {
         public var isProjector: Bool { ModelRecord.isProjector(filename: path) }
     }
 
-    private let session: URLSession
-    private let host: URL
+    let session: URLSession
+    let host: URL
 
     public init(session: URLSession = .shared, host: URL = URL(string: "https://huggingface.co")!) {
         self.session = session
@@ -162,7 +162,7 @@ public struct HuggingFaceSearch: Sendable {
         return String(combined.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "." ? $0 : "-" })
     }
 
-    private static func check(_ response: URLResponse) throws {
+    static func check(_ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200...299).contains(http.statusCode) else {
             throw SearchError.httpStatus(http.statusCode)
@@ -336,7 +336,7 @@ public struct HuggingFaceSearch: Sendable {
     }
 
     /// HF sends `false`, `"auto"` or `"manual"` in the same field.
-    private struct GatedFlag: Decodable {
+    struct GatedFlag: Decodable {
         let isGated: Bool
 
         init(from decoder: any Decoder) throws {

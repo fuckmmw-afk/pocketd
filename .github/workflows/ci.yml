@@ -20,9 +20,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-14]
+        os: [xcode-27, macos-26]
     steps:
       - uses: actions/checkout@v4
+
+      # The newest stable Xcode on the image. The app is written against the
+      # iOS 27 SDK (Foundation Models, BGTaskScheduler), so it builds only on
+      # the xcode-27 image; the package needs no more than Swift 6.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - name: Show toolchain
         run: swift --version
@@ -36,13 +43,17 @@ jobs:
 
   app:
     name: app (iOS simulator)
-    runs-on: macos-15
+    runs-on: xcode-27
     # The app target builds llama.cpp from source through LocalLLMClient, which
     # is minutes of C++ even with a warm cache. It is a separate job so that a
     # Swift-level break in the package reports in one minute instead of fifteen.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - name: Install XcodeGen
         run: brew install xcodegen

@@ -35,6 +35,9 @@ public actor InferenceServer {
     /// Used to tell a searcher whether a file will fit before they spend
     /// gigabytes finding out.
     let deviceBudget: DeviceBudget
+    /// Speech to text for `/v1/audio/transcriptions`. Nil in tests and in a
+    /// build without it, where the route answers 501.
+    let transcriber: (any SpeechTranscriber)?
 
     private var server: HTTPServer?
     private var runTask: Task<Void, Never>?
@@ -54,6 +57,7 @@ public actor InferenceServer {
         models: @escaping @Sendable () async -> [ModelRecord],
         puller: (@Sendable (ModelRecord) -> AsyncThrowingStream<DownloadProgress, any Error>)? = nil,
         deviceBudget: DeviceBudget = .current(hasIncreasedMemoryLimit: false),
+        transcriber: (any SpeechTranscriber)? = nil,
         log: RequestLog = RequestLog()
     ) {
         self.configuration = configuration
@@ -61,6 +65,7 @@ public actor InferenceServer {
         self.modelsProvider = models
         self.puller = puller
         self.deviceBudget = deviceBudget
+        self.transcriber = transcriber
         self.log = log
     }
 
@@ -250,7 +255,7 @@ public actor InferenceServer {
 
     /// Compares without an early return so that a wrong key takes the same time
     /// to reject regardless of how much of the prefix was correct.
-    private func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
+    func constantTimeEquals(_ lhs: String, _ rhs: String) -> Bool {
         let a = Array(lhs.utf8), b = Array(rhs.utf8)
         guard a.count == b.count else { return false }
         var difference: UInt8 = 0
@@ -262,6 +267,19 @@ public actor InferenceServer {
     /// does not run twice as fast, it makes both slower and heats the device.
     func beginRequest() -> Bool {
         guard activeRequests < configuration.maxConcurrentRequests else { return false }
+        activeRequests += 1
+        return true
+    }
+
+    /// Admission for a client that would rather wait than be turned away.
+    ///
+    /// The Anthropic route's: Claude Code sends several requests at once, and
+    /// the engine serialises them anyway, so up to `anthropicQueueDepth` of them
+    /// are let through to wait their turn there. They count against the same
+    /// total as everything else, so while one waits the other dialects still
+    /// see a busy phone and answer 503, exactly as before.
+    func beginQueuedRequest() -> Bool {
+        guard activeRequests < configuration.maxConcurrentRequests + Self.anthropicQueueDepth else { return false }
         activeRequests += 1
         return true
     }

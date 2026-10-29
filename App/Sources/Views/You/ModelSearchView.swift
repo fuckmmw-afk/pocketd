@@ -113,6 +113,18 @@ struct ModelSearchView: View {
                 title: "Nothing for “\(term)”.",
                 detail: "Only phone-sized files show up here. Try the family name on its own."
             )
+        case let .unavailable(id, reason):
+            if let speech = SpeechModels.model(forRepository: id) {
+                // Not a brain, but something Pocketd can run: a speech model.
+                YouSection(
+                    "Speech recognition",
+                    footnote: "Turns your voice into text on this iPhone, for the microphone and for other devices."
+                ) {
+                    SpeechModelRow(model: speech)
+                }
+            } else {
+                EmptyCard(symbol: "exclamationmark.circle", title: "Pocketd can't run “\(id)”.", detail: reason)
+            }
         case let .failed(message):
             EmptyCard(symbol: "wifi.exclamationmark", title: "That didn't work.", detail: message) {
                 PillButton(title: "Try again", symbol: "arrow.clockwise") { attempt += 1 }
@@ -335,13 +347,16 @@ private final class RepositoryFinder {
         case searching
         case results([HuggingFaceSearch.Repository])
         case noMatches(String)
+        /// A repository named exactly, which exists but is not offered, and
+        /// the sentence that says why.
+        case unavailable(id: String, reason: String)
         case failed(String)
     }
 
     private(set) var phase: Phase = .prompt
 
     func search(_ raw: String, budget: DeviceBudget) async {
-        let query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = HuggingFaceSearch.normalizedQuery(raw)
         // The same floor the hub's search enforces: one character matches half
         // of it and none of it usefully.
         guard query.count >= 2 else {
@@ -366,6 +381,18 @@ private final class RepositoryFinder {
                 try await HuggingFaceClient.shared.repositories(matching: query, limit: 50),
                 for: budget
             )
+            // Named exactly and still missing: ask the hub about that one
+            // repository, so a Core ML speech model or a repo with no GGUF in
+            // it says so instead of looking like a typo.
+            if found.isEmpty, let id = HuggingFaceSearch.repositoryID(in: query),
+               let details = try await HuggingFaceClient.shared.details(of: id) {
+                if let reason = HuggingFaceSearch.whyNotOffered(details, for: budget) {
+                    phase = .unavailable(id: details.repository.id, reason: reason)
+                } else {
+                    phase = .results([details.repository])
+                }
+                return
+            }
             phase = found.isEmpty ? .noMatches(query) : .results(found)
         } catch {
             guard !isCancellation(error) else { return }

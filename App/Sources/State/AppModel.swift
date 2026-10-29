@@ -601,7 +601,10 @@ final class AppModel {
                     continuation.onTermination = { _ in task.cancel() }
                 }
             },
-            deviceBudget: budget
+            deviceBudget: budget,
+            // Speech to text for other devices, with the same model the
+            // microphone uses once one is downloaded.
+            transcriber: ParakeetTranscriber.shared
         )
 
         systemPrompt = UserDefaults.standard.string(forKey: Keys.systemPrompt) ?? systemPrompt

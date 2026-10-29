@@ -221,6 +221,16 @@ actor LlamaEngine: InferenceEngine {
     /// (see `run`). Reached the same way `DecodeAbort` reaches it, and nil when
     /// that fails.
     private var residentContext: LocalLLMClientLlama.Context?
+    /// The resident client's raw `llama_context`, for `ClientToolGeneration`,
+    /// which decodes into it directly. Reached the way `DecodeAbort` reaches it.
+    private var residentContextPointer: OpaquePointer?
+    /// What `ClientToolGeneration` last left in the resident context's KV
+    /// cache, token by token, so the next client-tool request reads only what
+    /// is new. nil whenever anything else has used the context or it is new.
+    private var clientToolCache: [Int32]?
+    /// Tokenizer and template for client-tool prompts, readable without the
+    /// actor so the server can count a prompt while another one decodes.
+    private nonisolated let clientPrompts = ClientToolPrompts()
 
     /// What the resident context's KV cache holds, which decides whether the
     /// next request may reuse it.
@@ -399,6 +409,7 @@ actor LlamaEngine: InferenceEngine {
     /// the phone's own chat, brief and routines never think, whatever it says.
     func updateThinking(networkAllowed: Bool) {
         networkThinkingAllowed = networkAllowed
+        clientPrompts.setThinking(allowed: networkAllowed)
     }
 
     // MARK: - Stopping
@@ -551,6 +562,8 @@ actor LlamaEngine: InferenceEngine {
         residentAbort?.trip()
         residentAbort = nil
         residentContext = nil
+        residentContextPointer = nil
+        clientToolCache = nil
         residue = .empty
         client = nil
         self.model = nil
@@ -675,6 +688,8 @@ actor LlamaEngine: InferenceEngine {
                 Self.log.error("abort callback not installed for \(model.id, privacy: .public); Stop will wait for the current decode")
             }
             residentAbort = abort
+            residentContextPointer = Mirror(reflecting: llama).descendant("context", "context") as? OpaquePointer
+            clientPrompts.install(modelID: model.id, url: url, chatTemplate: header.chatTemplate)
             residue = .empty
             client = AnyLLMClient(llama)
             self.model = model
@@ -733,6 +748,9 @@ actor LlamaEngine: InferenceEngine {
         residentAbort?.trip()
         residentAbort = nil
         residentContext = nil
+        residentContextPointer = nil
+        clientToolCache = nil
+        clientPrompts.clear()
         residue = .empty
         client = nil
         model = nil
@@ -816,9 +834,26 @@ actor LlamaEngine: InferenceEngine {
         let window = min(model.contextLength, contextTokens)
         let fromThisPhone = request.origin.isThisPhone
 
+        // A client that runs its own tools is answered on a path of its own,
+        // unless it sent images to a model that can see them: only
+        // LocalLLMClient can feed an image to the projector, so those take the
+        // ordinary path below with the tools described in words.
+        let carriesImagesForVision = model.projectorFilename != nil
+            && request.messages.contains { !$0.images.isEmpty }
+        if request.clientTools != nil, !carriesImagesForVision {
+            await runClientTools(request, model: model, window: window, continuation: continuation)
+            return
+        }
+
         // What the model will actually read. Decided before the rebuild check,
         // because whether the resident context can be reused depends on it.
         var messages = request.messages
+        if let clientTools = request.clientTools {
+            messages = ChatTemplateInput.flattened(messages, tools: clientTools)
+        }
+        // LocalLLMClient is about to use the context, and keeps no record of
+        // what this file's own path left in it.
+        clientToolCache = nil
         // Thinking first: the switch rides on the latest user turn, which
         // trimming never drops, and it has to be counted when trimming.
         if !ThinkingPolicy.allowsThinking(for: request.origin, serverAllowsThinking: networkThinkingAllowed) {
@@ -964,7 +999,7 @@ actor LlamaEngine: InferenceEngine {
         // screens: thinking is switched off for them, and this is the defence
         // for a model that ignores the switch or has none. Other devices get
         // the raw text they asked for.
-        var reasoning: ReasoningFilter? = ThinkingPolicy.stripsReasoning(for: request.origin)
+        var reasoning: ReasoningFilter? = ThinkingPolicy.stripsReasoning(for: request.origin) || request.clientTools != nil
             ? ReasoningFilter(startsInsideReasoning: residentPrefillsReasoning)
             : nil
 
@@ -1299,6 +1334,84 @@ actor LlamaEngine: InferenceEngine {
         } onCancel: {
             abort?.trip()
         }
+    }
+
+    // MARK: - Client tools
+
+    /// A `ClientTools` request: rendered with the model's template, decoded
+    /// straight into the resident context, nothing on the phone executed.
+    ///
+    /// Holding the gate, like everything else that touches the context.
+    private func runClientTools(
+        _ request: GenerationRequest,
+        model: ModelRecord,
+        window: Int,
+        continuation: AsyncThrowingStream<GenerationEvent, any Error>.Continuation
+    ) async {
+        // Rebuilt for what makes the context itself unusable, and for nothing
+        // about sampling or the phone's tools: this path brings its own
+        // sampler and offers only the client's tools.
+        if contextIsDirty || residentAbort?.isTripped == true || residentContextTokens != window
+            || residentContextPointer == nil {
+            do {
+                try await loadHoldingGate(model, sampling: residentSampling ?? defaultSampling)
+            } catch {
+                continuation.finish(throwing: error)
+                return
+            }
+        }
+        guard let context = residentContextPointer, let vocabulary = clientPrompts.vocabulary(for: model.id) else {
+            continuation.finish(throwing: InferenceError.backend(
+                "\(model.id) could not be prepared for tool calling: its tokenizer did not open."
+            ))
+            return
+        }
+        let prepared: ClientToolPrompts.Prepared
+        do {
+            guard let rendered = try clientPrompts.prepare(request) else {
+                continuation.finish(throwing: InferenceError.modelMismatch(requested: request.modelID, loaded: model.id))
+                return
+            }
+            prepared = rendered
+        } catch {
+            continuation.finish(throwing: InferenceError.backend(
+                "\(model.id)'s chat template could not render this conversation: \(error)"
+            ))
+            return
+        }
+
+        // LocalLLMClient's own prompt cache stops describing this context the
+        // moment anything else decodes into it; its next request rebuilds.
+        residue = .unknown
+        let outcome = await ClientToolGeneration.run(
+            context: context,
+            vocabulary: vocabulary,
+            prepared: prepared,
+            cache: clientToolCache,
+            window: window,
+            maxTokens: request.options.maxTokens,
+            sampling: request.resolvedSampling(defaults: defaultSampling),
+            continuation: continuation
+        )
+        clientToolCache = outcome.cache
+        if outcome.failure == .cancelled, residentAbort?.isTripped == true {
+            contextIsDirty = true
+        }
+    }
+
+    /// Exact, for a client-tool request whose model's tokenizer is open: the
+    /// prompt `runClientTools` will decode, rendered and tokenized. Anything
+    /// else is estimated, as the protocol's default would.
+    nonisolated func countPromptTokens(_ request: GenerationRequest) async throws -> Int {
+        if request.clientTools != nil, let prepared = try clientPrompts.prepare(request) {
+            return prepared.tokens.count
+        }
+        var text = request.messages.flatMap(\.toolCalls).map(\.arguments.serialized).joined()
+        if let tools = request.clientTools?.offered {
+            text += ChatTemplateInput.nativeTools(tools).map(\.serialized).joined()
+        }
+        return ContextGuard.estimateTokens(request.messages) + ContextGuard.estimateTokens(text)
+            + (await promptOverheadTokens)
     }
 
     /// Whether `messages` continues exactly what the resident context holds,
