@@ -1336,18 +1336,6 @@ actor LlamaEngine: InferenceEngine {
         }
     }
 
-    /// Whether `messages` continues exactly what the resident context holds,
-    /// so LocalLLMClient's prompt cache will find all of it at the start of
-    /// the new prompt and read only what is new.
-    ///
-    /// Strict on purpose, because a wrong yes costs a confused answer — the
-    /// new prompt read in after the old one — and a wrong no costs a rebuild.
-    /// The previous request must have been answered in full with no tool
-    /// round, the new one must repeat it message for message, and its next
-    /// message must be that answer, byte for byte. An answer with surrounding
-    /// whitespace or reasoning tags is not trusted to come back unchanged:
-    /// Qwen3's template drops the working from history and Gemma's trims, so
-    /// what they render no longer starts with what was generated.
     // MARK: - Client tools
 
     /// A `ClientTools` request: rendered with the model's template, decoded
@@ -1426,6 +1414,18 @@ actor LlamaEngine: InferenceEngine {
             + (await promptOverheadTokens)
     }
 
+    /// Whether `messages` continues exactly what the resident context holds,
+    /// so LocalLLMClient's prompt cache will find all of it at the start of
+    /// the new prompt and read only what is new.
+    ///
+    /// Strict on purpose, because a wrong yes costs a confused answer — the
+    /// new prompt read in after the old one — and a wrong no costs a rebuild.
+    /// The previous request must have been answered in full with no tool
+    /// round, the new one must repeat it message for message, and its next
+    /// message must be that answer, byte for byte. An answer with surrounding
+    /// whitespace or reasoning tags is not trusted to come back unchanged:
+    /// Qwen3's template drops the working from history and Gemma's trims, so
+    /// what they render no longer starts with what was generated.
     private static func continues(_ residue: Residue, with messages: [ChatMessage]) -> Bool {
         switch residue {
         case .empty:
