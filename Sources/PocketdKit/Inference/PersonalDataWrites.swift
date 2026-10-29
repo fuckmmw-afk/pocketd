@@ -244,7 +244,7 @@ public enum PersonalDataWrites {
         case let .unauthorized(authorization): return ["text": authorization.explanation(for: .reminders)]
         }
 
-        let matches = rows.filter { matches(title, $0.title.attackerControlledValue()) }
+        let matches = rows.filter { Self.matches(title, $0.title.attackerControlledValue()) }
         guard !matches.isEmpty else {
             return ["text": "I could not find an open reminder matching \"\(title)\"."]
         }

@@ -152,6 +152,16 @@ struct AnthropicToolParsingTests {
         #expect(parsed.text.contains("not json at all"))
     }
 
+    @Test("doubled braces are forgiven")
+    func doubledBraces() {
+        // Verbatim from Qwen2.5-0.5B-Instruct at temperature 0.
+        let parsed = ToolCallParser.parse(
+            "<tool_call>\n{{\"name\": \"Bash\", \"arguments\": {\"command\": \"ls /tmp\"}}}\n</tool_call>",
+            tools: tools
+        )
+        #expect(parsed.calls == [ParsedToolCall(name: "Bash", arguments: ["command": "ls /tmp"])])
+    }
+
     @Test("trailing commas are forgiven")
     func trailingComma() {
         let parsed = ToolCallParser.parse(#"<tool_call>{"name": "Bash", "arguments": {"command": "ls",},}</tool_call>"#, tools: tools)

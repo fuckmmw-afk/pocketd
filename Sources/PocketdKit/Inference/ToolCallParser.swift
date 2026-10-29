@@ -306,10 +306,15 @@ public enum ToolCallParser {
 
     // MARK: - Lenient JSON
 
-    /// Strict JSON first, then the two mistakes small models make most:
-    /// trailing commas, and a stray close brace or two at the end.
+    /// Strict JSON first, then the mistakes small models make most: doubled
+    /// braces copied from the template's own `{{` (Qwen 2.5 at 0.5B does this
+    /// on its first call), trailing commas, and a stray close brace or two.
     static func lenientJSON(_ text: String) -> JSONValue? {
         if let value = JSONValue.parse(text) { return value }
+        if text.hasPrefix("{{"), text.hasSuffix("}}"),
+           let value = lenientJSON(String(text.dropFirst().dropLast())) {
+            return value
+        }
         let noTrailingCommas = text.replacingOccurrences(
             of: #",\s*([}\]])"#, with: "$1", options: .regularExpression
         )
